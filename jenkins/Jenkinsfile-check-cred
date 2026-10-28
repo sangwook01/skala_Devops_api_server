@@ -1,0 +1,37 @@
+pipeline {
+  agent any
+
+  environment {
+    GIT_CREDENTIAL_ID = 'sk006-github-id'
+    REGISTRY_CREDENTIAL_ID = 'skala-image-registry-id'
+  }
+
+  stages {
+    stage('Check credentials') {
+      steps {
+        withCredentials([
+          usernamePassword(
+            credentialsId: "${GIT_CREDENTIAL_ID}",
+            usernameVariable: 'GIT_USER',
+            passwordVariable: 'GIT_TOKEN'
+          ),
+          usernamePassword(
+            credentialsId: "${REGISTRY_CREDENTIAL_ID}",
+            usernameVariable: 'REGISTRY_USER',
+            passwordVariable: 'REGISTRY_TOKEN'
+          )
+        ]) {
+          sh '''
+            set -eu
+            test -n "$GIT_USER"
+            test -n "$GIT_TOKEN"
+            test -n "$REGISTRY_USER"
+            test -n "$REGISTRY_TOKEN"
+            echo "GitHub credential: configured"
+            echo "Harbor credential: configured"
+          '''
+        }
+      }
+    }
+  }
+}

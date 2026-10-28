@@ -4,18 +4,12 @@ kind: Kustomization
 namespace: class-1
 
 resources:
-- ../../base
-- configmap.yaml
+  - ../../base
 
-patches:
-- path: patch-deployment.yaml
-  target:
-    kind: Deployment
-    name: sk006-myfirst-api-server
+replicas:
+  - name: sk006-webserver
+    count: 1
 
-# 이미지 tag만 갱신하고 싶을 때 (standalone kustomize CLI 필요):
-#   cd kustomize/dev && kustomize edit set image \
-#     skala-registry.skala-ai.com/class-1/sk006-webserver=skala-registry.skala-ai.com/class-1/sk006-webserver:<NEW_TAG>
 images:
-- name: skala-registry.skala-ai.com/class-1/sk006-webserver
-  newTag: "1.0.docker"
+  - name: skala-registry.skala-ai.com/class-1/sk006-webserver
+    newTag: "1.0"

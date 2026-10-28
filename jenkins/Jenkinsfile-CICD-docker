@@ -1,0 +1,73 @@
+pipeline {
+  agent any
+
+  environment {
+    APP_DIR                 = '01.spring-backend-v1.0'
+    GIT_URL                 = 'https://github.com/sangwook01/skala_Devops_api_server.git'
+    GIT_BRANCH              = 'main'
+    GIT_ID                  = 'sk006-github-id'
+    IMAGE_REGISTRY_URL      = 'skala-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT  = 'class-1'
+    IMAGE_NAME              = 'sk006-webserver'
+    IMAGE_TAG_BASE          = '1.0-docker'
+    REGISTRY_CREDENTIAL_ID  = 'skala-image-registry-id'
+    K8S_NAMESPACE           = 'class-1'
+    DEPLOYMENT_NAME         = 'sk006-webserver'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+    timeout(time: 20, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('Clone Repository') {
+      steps {
+        git branch: "${GIT_BRANCH}", url: "${GIT_URL}", credentialsId: "${GIT_ID}"
+      }
+    }
+    stage('Build with Maven') {
+      steps {
+        dir("${APP_DIR}") {
+          sh 'mvn -s repo-setting/settings.xml clean package -DskipTests'
+        }
+      }
+    }
+    stage('Image Build and Push - Docker') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${REGISTRY_CREDENTIAL_ID}",
+          usernameVariable: 'REGISTRY_USER',
+          passwordVariable: 'REGISTRY_PASSWORD'
+        )]) {
+          sh '''
+            set -eu
+            FINAL_IMAGE_TAG="${IMAGE_TAG_BASE}-${BUILD_NUMBER}"
+            IMAGE_REF="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+            printf '%s' "$REGISTRY_PASSWORD" | docker login "$IMAGE_REGISTRY_URL" -u "$REGISTRY_USER" --password-stdin
+            docker buildx build --platform linux/amd64 -t "$IMAGE_REF" --push "$APP_DIR"
+          '''
+        }
+      }
+    }
+    stage('Update Kustomize and Deploy') {
+      steps {
+        sh '''
+          set -eu
+          FINAL_IMAGE_TAG="${IMAGE_TAG_BASE}-${BUILD_NUMBER}"
+          IMAGE_BASE="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}"
+          (cd "${APP_DIR}/kustomize/overlays/dev" && kustomize edit set image "${IMAGE_BASE}=${IMAGE_BASE}:${FINAL_IMAGE_TAG}")
+          kustomize build "${APP_DIR}/kustomize/overlays/dev" | kubectl apply -n "$K8S_NAMESPACE" -f -
+          kubectl rollout status "deployment/${DEPLOYMENT_NAME}" -n "$K8S_NAMESPACE" --timeout=180s
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      deleteDir()
+    }
+  }
+}

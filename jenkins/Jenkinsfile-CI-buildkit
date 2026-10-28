@@ -1,0 +1,97 @@
+pipeline {
+  agent any
+
+  environment {
+    APP_DIR                 = '01.spring-backend-v1.0'
+    GIT_URL                 = 'https://github.com/sangwook01/skala_Devops_api_server.git'
+    GIT_BRANCH              = 'main'
+    GITOPS_BRANCH           = 'gitops'
+    GIT_ID                  = 'sk006-github-id'
+    IMAGE_REGISTRY_URL      = 'skala-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT  = 'class-1'
+    IMAGE_NAME              = 'sk006-webserver'
+    IMAGE_TAG_BASE          = '1.0-buildkit'
+    REGISTRY_CREDENTIAL_ID  = 'skala-image-registry-id'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+    timeout(time: 20, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('Clone Repository') {
+      steps {
+        git branch: "${GIT_BRANCH}", url: "${GIT_URL}", credentialsId: "${GIT_ID}"
+        script {
+          env.SHORT_COMMIT = sh(script: 'git rev-parse --short=7 HEAD', returnStdout: true).trim()
+          env.FINAL_IMAGE_TAG = "${env.IMAGE_TAG_BASE}-${env.BUILD_NUMBER}-${env.SHORT_COMMIT}"
+        }
+      }
+    }
+    stage('Build with Maven') {
+      steps {
+        dir("${APP_DIR}") {
+          sh 'mvn -s repo-setting/settings.xml clean package -DskipTests'
+        }
+      }
+    }
+    stage('Image Build and Push - BuildKit') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${REGISTRY_CREDENTIAL_ID}",
+          usernameVariable: 'REGISTRY_USER',
+          passwordVariable: 'REGISTRY_PASSWORD'
+        )]) {
+          sh '''
+            set -eu
+            mkdir -p "$HOME/.docker"
+            AUTH=$(printf '%s:%s' "$REGISTRY_USER" "$REGISTRY_PASSWORD" | base64 | tr -d '\n')
+            printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$IMAGE_REGISTRY_URL" "$AUTH" > "$HOME/.docker/config.json"
+            IMAGE_REF="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+            export BUILDKITD_FLAGS="--oci-worker-snapshotter=native"
+            buildctl-daemonless.sh build \
+              --frontend dockerfile.v0 \
+              --local context="$APP_DIR" \
+              --local dockerfile="$APP_DIR" \
+              --opt platform=linux/amd64 \
+              --output type=image,name="$IMAGE_REF",push=true
+          '''
+        }
+      }
+    }
+    stage('GitOps Update') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${GIT_ID}",
+          usernameVariable: 'GIT_USER',
+          passwordVariable: 'GIT_TOKEN'
+        )]) {
+          sh '''
+            set -eu
+            git config user.name "skala-gitops"
+            git config user.email "skala@skala-ai.com"
+            git fetch origin "$GITOPS_BRANCH"
+            git switch -C "$GITOPS_BRANCH" "origin/$GITOPS_BRANCH"
+            IMAGE_BASE="${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}/${IMAGE_NAME}"
+            cd "${APP_DIR}/kustomize/overlays/dev"
+            kustomize edit set image "${IMAGE_BASE}=${IMAGE_BASE}:${FINAL_IMAGE_TAG}"
+            cd - >/dev/null
+            git add "${APP_DIR}/kustomize/overlays/dev/kustomization.yaml"
+            git commit -m "[AUTO] image: ${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+            REPO_PATH="${GIT_URL#https://}"
+            set +x
+            git push "https://${GIT_USER}:${GIT_TOKEN}@${REPO_PATH}" "$GITOPS_BRANCH"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      deleteDir()
+    }
+  }
+}
